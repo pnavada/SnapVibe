@@ -249,25 +249,6 @@ func sendMarkerWithDelay(markerDelay float64, snapshotId int, initiator int, me 
 	go sendMarker(snapshotId, initiator, me)
 }
 
-func initSnapshot(markerDelay float64, sender int, snapshotDelay float64, snapshotId int, initiator int, me int) {
-	time.Sleep(time.Duration(int64(snapshotDelay * 1e9)))
-	errorLogger.Printf("{proc_id:%d, snapshot_id: %d, snapshot:\"started\"}\n", me, snapshotId)
-	stateLock.Lock()
-	var snap = Snapshot{state: state}
-	stateLock.Unlock()
-	snapshots[snapshotId] = &snap
-	snap.channels = make(map[int]*Channel)
-	for _, id := range procIds {
-		if id != me {
-			snap.channels[id] = &Channel{queue: make([]int, 0)}
-		}
-	}
-	if sender != -1 {
-		closeChannel(snapshotId, sender, me)
-	}
-	go sendMarkerWithDelay(markerDelay, snapshotId, initiator, me)
-}
-
 func addToQueue(sender int, message int) {
 	for _, snap := range snapshots {
 		snap.channels[sender].lock.Lock()
@@ -344,12 +325,42 @@ func removeByIndex(slice []string, index int) []string {
 	return append(slice[:index], slice[index+1:]...)
 }
 
+func initSnapshot(markerDelay float64, sender int, snapshotId int, initiator int, me int) {
+	errorLogger.Printf("{proc_id:%d, snapshot_id: %d, snapshot:\"started\"}\n", me, snapshotId)
+	stateLock.Lock()
+	var snap = Snapshot{state: state}
+	stateLock.Unlock()
+	snapshots[snapshotId] = &snap
+	snap.channels = make(map[int]*Channel)
+	for _, id := range procIds {
+		if id != me {
+			snap.channels[id] = &Channel{queue: make([]int, 0)}
+		}
+	}
+	if sender != -1 {
+		closeChannel(snapshotId, sender, me)
+	}
+	go sendMarkerWithDelay(markerDelay, snapshotId, initiator, me)
+}
+
+func initSnapshotAfterState(markerDelay float64, sender int, snapshotDelay int, snapshotId int, initiator int, me int) {
+	for {
+		stateLock.Lock()
+		if state == snapshotDelay {
+			stateLock.Unlock()
+			go initSnapshot(markerDelay, sender, snapshotId, initiator, me)
+			return
+		}
+		stateLock.Unlock()
+	}
+}
+
 func main() {
 
 	hostsfile := flag.String("h", "", "Name of the file containing the list of peers")
 	tokenDelay := flag.Float64("t", float64(0), "Delay in seconds before sending the token")
 	markerDelay := flag.Float64("m", float64(-1), "Delay in seconds before sending the marker")
-	snapshotDelay := flag.Float64("s", float64(-1), "Delay in seconds before initiating the snapshot")
+	snapshotDelay := flag.Int("s", -1, "Delay in seconds before initiating the snapshot")
 	snapshotId := flag.Int("p", -1, "ID of the snapshot")
 	hasToken = flag.Bool("x", false, "Do I have the token?")
 
@@ -384,6 +395,10 @@ func main() {
 	debugLogger.Println("Predecessor:", pred)
 	debugLogger.Println("Successor:", succ)
 
+	if *hasToken {
+		state = 1
+	}
+
 	errorLogger.Printf(
 		"{proc_id: %d, state: %d, predecessor: %d, successor: %d}\n",
 		procIds[host],
@@ -402,12 +417,13 @@ func main() {
 	go dialPeers(peers)
 
 	time.Sleep(time.Second)
+
 	if *hasToken {
 		go passTokenWithDelay(*tokenDelay, succ, host)
 	}
 
 	if *snapshotId != -1 {
-		go initSnapshot(*markerDelay, -1, *snapshotDelay, *snapshotId, procIds[host], procIds[host])
+		go initSnapshotAfterState(*markerDelay, -1, *snapshotDelay, *snapshotId, procIds[host], procIds[host])
 	}
 
 	for {
@@ -434,7 +450,7 @@ func main() {
 				_, ok := snapshots[SnapshotId]
 				if !ok {
 					sender := procIds[peerReadAddrToHostname[Msg.Addr]]
-					go initSnapshot(*markerDelay, sender, 0, SnapshotId, Initiator, procIds[host])
+					go initSnapshot(*markerDelay, sender, SnapshotId, Initiator, procIds[host])
 				} else {
 					// Close the communication on the channel
 					go closeChannel(SnapshotId, procIds[peerReadAddrToHostname[Msg.Addr]], procIds[host])
