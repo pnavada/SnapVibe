@@ -35,7 +35,9 @@ var (
 	procIds                 = make(map[string]int)
 	snapshots               = make(map[int]*Snapshot)
 	stateLock               sync.Mutex
-	lock                    sync.Mutex
+	mapLock                 sync.Mutex
+	hasToken                *bool
+	hasTokenLock            sync.Mutex
 )
 
 type Channel struct {
@@ -182,7 +184,7 @@ func handleConnection(conn net.Conn) {
 
 	defer conn.Close()
 	debugLogger.Println("Peer connected: ", conn.RemoteAddr())
-	lock.Lock()
+	mapLock.Lock()
 	readConnMap[conn.RemoteAddr()] = conn
 	peer, err := getHostnameFromIP(conn.RemoteAddr())
 
@@ -191,7 +193,7 @@ func handleConnection(conn net.Conn) {
 	}
 
 	peerReadAddrToHostname[conn.RemoteAddr()] = peer
-	lock.Unlock()
+	mapLock.Unlock()
 
 	// Read messages from the peer
 	buffer := make([]byte, 100)
@@ -268,15 +270,11 @@ func initSnapshot(markerDelay float64, sender int, snapshotDelay float64, snapsh
 
 func addToQueue(sender int, message int) {
 	for _, snap := range snapshots {
-		channel := snap.channels[sender]
-		channel.lock.Lock()
-		if !channel.close {
-			queue := channel.queue
-			queue = append(queue, message)
-			channel.queue = queue
+		snap.channels[sender].lock.Lock()
+		if !snap.channels[sender].close {
+			snap.channels[sender].queue = append(snap.channels[sender].queue, message)
 		}
-		channel.lock.Unlock()
-		snap.channels[sender] = channel
+		snap.channels[sender].lock.Unlock()
 	}
 }
 
@@ -353,7 +351,7 @@ func main() {
 	markerDelay := flag.Float64("m", float64(-1), "Delay in seconds before sending the marker")
 	snapshotDelay := flag.Float64("s", float64(-1), "Delay in seconds before initiating the snapshot")
 	snapshotId := flag.Int("p", -1, "ID of the snapshot")
-	hasToken := flag.Bool("x", false, "Do I have the token?")
+	hasToken = flag.Bool("x", false, "Do I have the token?")
 
 	flag.Parse()
 
@@ -418,12 +416,15 @@ func main() {
 			MsgType := int(binary.LittleEndian.Uint32(Msg.Data[0:4]))
 			switch MsgType {
 			case token: // Token received
-				// errorLogger.Printf(
-				// 	"{proc_id: %d, sender: %d, receiver: %d, message:\"token\"}\n",
-				// 	procIds[host],
-				// 	procIds[peerReadAddrToHostname[Msg.Addr]],
-				// 	procIds[host],
-				// )
+				errorLogger.Printf(
+					"{proc_id: %d, sender: %d, receiver: %d, message:\"token\"}\n",
+					procIds[host],
+					procIds[peerReadAddrToHostname[Msg.Addr]],
+					procIds[host],
+				)
+				hasTokenLock.Lock()
+				*hasToken = true
+				hasTokenLock.Unlock()
 				go passTokenWithDelay(*tokenDelay, succ, host)
 				// Add the message to the queue
 				go addToQueue(procIds[peerReadAddrToHostname[Msg.Addr]], token)
@@ -448,6 +449,9 @@ func main() {
 			MsgType := int(binary.LittleEndian.Uint32(Msg.Data[0:4]))
 			switch MsgType {
 			case token:
+				hasTokenLock.Lock()
+				*hasToken = false
+				hasTokenLock.Unlock()
 				errorLogger.Printf(
 					"{proc_id: %d, sender: %d, receiver: %d, message:\"token\"}\n",
 					procIds[host],
@@ -457,14 +461,23 @@ func main() {
 			case marker:
 				SnapshotId := int(binary.LittleEndian.Uint32(Msg.Data[4:8]))
 				stateLock.Lock()
+				hasTokenLock.Lock()
+				var tokenStatus string
+				if *hasToken {
+					tokenStatus = "YES"
+				} else {
+					tokenStatus = "NO"
+				}
 				errorLogger.Printf(
-					"{proc_id:%d, snapshot_id: %d, sender:%d, receiver:%d, msg:\"marker\", state:%d, has_token:YES/NO}",
+					"{proc_id:%d, snapshot_id: %d, sender:%d, receiver:%d, msg:\"marker\", state:%d, has_token:%s}",
 					procIds[host],
 					SnapshotId,
 					procIds[host],
 					procIds[peerWriteAddrToHostname[Msg.Addr]],
 					state,
+					tokenStatus,
 				)
+				hasTokenLock.Unlock()
 				stateLock.Unlock()
 			}
 		}
