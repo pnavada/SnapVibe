@@ -2,7 +2,7 @@ package main
 
 import (
 	"bufio"
-	"encoding/json"
+	"encoding/binary"
 	"flag"
 	"fmt"
 	"log"
@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	marker     = "marker"
-	token      = "token"
+	token      = 0
+	marker     = 1
 	serverPort = 8080
 )
 
@@ -39,7 +39,7 @@ var (
 )
 
 type Channel struct {
-	queue []string
+	queue []int
 	close bool
 	lock  sync.Mutex
 }
@@ -51,27 +51,13 @@ type Snapshot struct {
 
 type Message struct {
 	Addr net.Addr
-	Data string
-}
-
-type Packet struct {
-	MsgType string
-	Msg     string
-}
-
-type Marker struct {
-	SnapshotId int
-	Initiator  int
+	Data []byte
 }
 
 func passToken(succ string) {
-	var packet = Packet{MsgType: token}
-	data, err := json.Marshal(packet)
-	if err != nil {
-		errorLogger.Println("Error serializing JSON", err)
-		return
-	}
-	writeChannel <- Message{Addr: peerHostnameToAddr[succ], Data: string(data)}
+	data := make([]byte, 12)
+	binary.LittleEndian.PutUint32(data[0:4], uint32(token))
+	writeChannel <- Message{Addr: peerHostnameToAddr[succ], Data: data}
 }
 
 func passTokenWithDelay(delay float64, succ string, host string) {
@@ -208,15 +194,17 @@ func handleConnection(conn net.Conn) {
 	lock.Unlock()
 
 	// Read messages from the peer
-	buffer := make([]byte, 1024)
+	buffer := make([]byte, 100)
 	for {
 		n, err := conn.Read(buffer)
 		if err != nil {
 			errorLogger.Println("Error reading from peer:", err)
 			return
 		}
-		message := string(buffer[:n])
-		readChannel <- Message{Addr: conn.RemoteAddr(), Data: message}
+		if n == 12 { // Expecting 12 bytes
+			message := buffer[:n]
+			readChannel <- Message{Addr: conn.RemoteAddr(), Data: message}
+		}
 	}
 
 }
@@ -245,18 +233,11 @@ func sendMarker(snapshotId int, initiator int, me int) {
 
 	for peer, id := range procIds {
 		if id != me {
-			msg, err := json.Marshal(Marker{SnapshotId: snapshotId, Initiator: initiator})
-			if err != nil {
-				errorLogger.Println("Error serializing JSON:", err)
-				continue
-			}
-			var packet = Packet{MsgType: marker, Msg: string(msg)}
-			msg, err = json.Marshal(packet)
-			if err != nil {
-				errorLogger.Println("Error serializing JSON:", err)
-				continue
-			}
-			writeChannel <- Message{Addr: peerHostnameToAddr[peer], Data: string(msg)}
+			data := make([]byte, 12)
+			binary.LittleEndian.PutUint32(data[0:4], uint32(marker))
+			binary.LittleEndian.PutUint32(data[4:8], uint32(snapshotId))
+			binary.LittleEndian.PutUint32(data[8:12], uint32(initiator))
+			writeChannel <- Message{Addr: peerHostnameToAddr[peer], Data: data}
 		}
 	}
 }
@@ -276,7 +257,7 @@ func initSnapshot(markerDelay float64, sender int, snapshotDelay float64, snapsh
 	snap.channels = make(map[int]*Channel)
 	for _, id := range procIds {
 		if id != me {
-			snap.channels[id] = &Channel{queue: make([]string, 0)}
+			snap.channels[id] = &Channel{queue: make([]int, 0)}
 		}
 	}
 	if sender != -1 {
@@ -285,7 +266,7 @@ func initSnapshot(markerDelay float64, sender int, snapshotDelay float64, snapsh
 	go sendMarkerWithDelay(markerDelay, snapshotId, initiator, me)
 }
 
-func addToQueue(sender int, message string) {
+func addToQueue(sender int, message int) {
 	for _, snap := range snapshots {
 		channel := snap.channels[sender]
 		channel.lock.Lock()
@@ -434,9 +415,7 @@ func main() {
 	for {
 		select {
 		case Msg := <-readChannel:
-			var packet Packet
-			json.Unmarshal([]byte(Msg.Data), &packet)
-			MsgType := packet.MsgType
+			MsgType := int(binary.LittleEndian.Uint32(Msg.Data[0:4]))
 			switch MsgType {
 			case token: // Token received
 				// errorLogger.Printf(
@@ -449,10 +428,8 @@ func main() {
 				// Add the message to the queue
 				go addToQueue(procIds[peerReadAddrToHostname[Msg.Addr]], token)
 			case marker: // Marker Received
-				var marker Marker
-				json.Unmarshal([]byte(packet.Msg), &marker)
-				Initiator := marker.Initiator
-				SnapshotId := marker.SnapshotId
+				SnapshotId := int(binary.LittleEndian.Uint32(Msg.Data[4:8]))
+				Initiator := int(binary.LittleEndian.Uint32(Msg.Data[8:12]))
 				_, ok := snapshots[SnapshotId]
 				if !ok {
 					sender := procIds[peerReadAddrToHostname[Msg.Addr]]
@@ -468,9 +445,7 @@ func main() {
 			if err != nil {
 				fmt.Println("Error sending message:", err)
 			}
-			var packet Packet
-			json.Unmarshal([]byte(Msg.Data), &packet)
-			MsgType := packet.MsgType
+			MsgType := int(binary.LittleEndian.Uint32(Msg.Data[0:4]))
 			switch MsgType {
 			case token:
 				errorLogger.Printf(
@@ -480,9 +455,7 @@ func main() {
 					procIds[peerWriteAddrToHostname[Msg.Addr]],
 				)
 			case marker:
-				var marker Marker
-				json.Unmarshal([]byte(packet.Msg), &marker)
-				SnapshotId := marker.SnapshotId
+				SnapshotId := int(binary.LittleEndian.Uint32(Msg.Data[4:8]))
 				stateLock.Lock()
 				errorLogger.Printf(
 					"{proc_id:%d, snapshot_id: %d, sender:%d, receiver:%d, msg:\"marker\", state:%d, has_token:YES/NO}",
