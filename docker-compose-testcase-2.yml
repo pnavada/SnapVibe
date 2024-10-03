@@ -1,0 +1,44 @@
+services:
+  peer1:
+    image: prj2
+    networks:
+      - mynetwork
+    hostname: "peer1"
+    container_name: "peer1"
+    command: -h hostsfile.txt -m 2 -t 0.2 -s 2 -p 1 -x
+
+  peer2:
+    image: prj2
+    networks:
+      - mynetwork
+    hostname: "peer2"
+    container_name: "peer2"
+    command: -h hostsfile.txt -m 2 -t 0.2
+
+  peer3:
+    image: prj2
+    networks:
+      - mynetwork
+    hostname: "peer3"
+    container_name: "peer3"
+    command: -h hostsfile.txt -m 2 -t 0.2
+
+  peer4:
+    image: prj2
+    networks:
+      - mynetwork
+    hostname: "peer4"
+    container_name: "peer4"
+    command: -h hostsfile.txt -m 2 -t 0.2
+
+  peer5:
+    image: prj2
+    networks:
+      - mynetwork
+    hostname: "peer5"
+    container_name: "peer5"
+    command: -h hostsfile.txt -m 2 -t 0.2
+
+networks:
+  # The presence of these objects is sufficient to define them
+  mynetwork: {}
