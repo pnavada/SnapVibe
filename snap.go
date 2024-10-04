@@ -277,9 +277,8 @@ func closeChannel(snapshotId int, sender int, me int) {
 	channel.lock.Unlock()
 }
 
-func checkIfSnapshotFinished(snapshotId int, me int) {
+func checkIfSnapshotFinished(snapshotId int, me int, snap *Snapshot) {
 	for {
-		snap := snapshots[snapshotId]
 		channels := snap.channels
 		count := 0
 		for _, channel := range channels {
@@ -343,7 +342,7 @@ func initSnapshot(markerDelay float64, sender int, snapshotId int, initiator int
 		closeChannel(snapshotId, sender, me)
 	}
 	go sendMarkerWithDelay(markerDelay, snapshotId, initiator, me)
-	go checkIfSnapshotFinished(snapshotId, me)
+	go checkIfSnapshotFinished(snapshotId, me, &snap)
 }
 
 func initSnapshotAfterState(markerDelay float64, sender int, snapshotDelay int, snapshotId int, initiator int, me int) {
